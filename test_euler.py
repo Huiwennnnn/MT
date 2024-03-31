@@ -5,7 +5,6 @@ from pyomo.environ import *
 from datetime import datetime
 import pickle
 
-
 # Basic Setting
 this_day = '2050-05-06'
 this_weekday = 'Friday'
@@ -15,63 +14,72 @@ path = f"/cluster/home/{user}/mt/{grid_folder}"
 data_path = f"/cluster/home/{user}/mt/nexus_profile"
 
 # Utlity
-date=6
+date = 6
+
+
 # Data Preprocessing
 def create_dict(row):
-    dict = [0]*24
+    dict = [0] * 24
     for hour in range(24):
-        if (row['park_end_day']==date) & (row['park_end_hour']>hour) & (row['arr_time'].day==date)&(row['arr_hour']<hour):
+        if (row['park_end_day'] == date) & (row['park_end_hour'] > hour) & (row['arr_time'].day == date) & (
+                row['arr_hour'] < hour):
             dict[hour] = 60
-        elif (row['park_end_day']==date) & (row['park_end_hour']>hour) & (row['arr_time'].day<date):
+        elif (row['park_end_day'] == date) & (row['park_end_hour'] > hour) & (row['arr_time'].day < date):
             dict[hour] = 60
-        elif (row['park_end_day']>date) & (row['arr_time'].day==date)&(row['arr_hour']<hour):
+        elif (row['park_end_day'] > date) & (row['arr_time'].day == date) & (row['arr_hour'] < hour):
             dict[hour] = 60
-        elif (row['park_end_day']>date) & (row['arr_time'].day<date):
+        elif (row['park_end_day'] > date) & (row['arr_time'].day < date):
             dict[hour] = 60
-        elif (row['park_end_day']==date) & (row['park_end_hour']>hour) & (row['arr_time'].day==date)&(row['arr_hour']==hour):
-            dict[hour] = 60-row['arr_time'].minute
-        elif  (row['park_end_day']>date) & (row['arr_hour']==hour)&(row['arr_time'].day==date):
-            dict[hour] = 60-row['arr_time'].minute
-        elif (row['park_end_hour']==hour) & (row['park_end_day']==date) & (row['arr_hour']<hour) & (row['arr_time'].day==date):
+        elif (row['park_end_day'] == date) & (row['park_end_hour'] > hour) & (row['arr_time'].day == date) & (
+                row['arr_hour'] == hour):
+            dict[hour] = 60 - row['arr_time'].minute
+        elif (row['park_end_day'] > date) & (row['arr_hour'] == hour) & (row['arr_time'].day == date):
+            dict[hour] = 60 - row['arr_time'].minute
+        elif (row['park_end_hour'] == hour) & (row['park_end_day'] == date) & (row['arr_hour'] < hour) & (
+                row['arr_time'].day == date):
             dict[hour] = row['park_end_time'].minute
-        elif (row['park_end_hour']==hour) & (row['park_end_day']==date) & (row['arr_time'].day<date):
+        elif (row['park_end_hour'] == hour) & (row['park_end_day'] == date) & (row['arr_time'].day < date):
             dict[hour] = row['park_end_time'].minute
-        elif (row['park_end_hour']==hour) & (row['park_end_day']==date) & (row['arr_hour']==hour) & (row['arr_time'].day==date):
-            dict[hour] = row['park_end_time'].minute-row['arr_time'].minute
+        elif (row['park_end_hour'] == hour) & (row['park_end_day'] == date) & (row['arr_hour'] == hour) & (
+                row['arr_time'].day == date):
+            dict[hour] = row['park_end_time'].minute - row['arr_time'].minute
         else:
-            dict[hour]=0
+            dict[hour] = 0
     return dict
 
+
 def soe_init(row):
-    soe_init=[0]*24
+    soe_init = [0] * 24
     for hour in range(24):
-        if row['arr_time'].day<date:
+        if row['arr_time'].day < date:
             soe_init[hour] = row['SoE_bc']
-        elif (hour<=row["arr_hour"]) and (row['arr_time'].day==date):
-            soe_init[hour]=row['SoE_bc']
+        elif (hour <= row["arr_hour"]) and (row['arr_time'].day == date):
+            soe_init[hour] = row['SoE_bc']
         else:
-            soe_init[hour]=0
+            soe_init[hour] = 0
     return soe_init
 
+
 def create_charge_time_list(row):
-    charge_time_list = [0]*24
+    charge_time_list = [0] * 24
     if row['c']:
         st_chg = row['st_chg_time'].hour
         ed_chg = row['ed_chg_time'].hour
         for t in range(24):
-            if (st_chg==t) & (ed_chg==t) & (row['ed_chg_time'].day == date):
-                charge_time_list[t] = row['ed_chg_time'].minute-row['st_chg_time'].minute
-            elif (st_chg<t) & (ed_chg>t) & (row['ed_chg_time'].day == date):
+            if (st_chg == t) & (ed_chg == t) & (row['ed_chg_time'].day == date):
+                charge_time_list[t] = row['ed_chg_time'].minute - row['st_chg_time'].minute
+            elif (st_chg < t) & (ed_chg > t) & (row['ed_chg_time'].day == date):
                 charge_time_list[t] = 60
-            elif (st_chg<t) & (ed_chg==t) & (row['ed_chg_time'].day == date):
+            elif (st_chg < t) & (ed_chg == t) & (row['ed_chg_time'].day == date):
                 charge_time_list[t] = row['ed_chg_time'].minute
-            elif (st_chg==t) & (((ed_chg>t) & (row['ed_chg_time'].day == date))|(row['ed_chg_time'].day>date)):
-                charge_time_list[t] = 60-row['st_chg_time'].minute
-            elif (st_chg<t) & (row['ed_chg_time'].day>date):
-                charge_time_list[t]=60
+            elif (st_chg == t) & (((ed_chg > t) & (row['ed_chg_time'].day == date)) | (row['ed_chg_time'].day > date)):
+                charge_time_list[t] = 60 - row['st_chg_time'].minute
+            elif (st_chg < t) & (row['ed_chg_time'].day > date):
+                charge_time_list[t] = 60
             else:
-                charge_time_list[t]=0
+                charge_time_list[t] = 0
     return charge_time_list
+
 
 # Data Postprocessing
 def get_timestamp_pair(row):
@@ -81,37 +89,37 @@ def get_timestamp_pair(row):
     for hour in range(24):
         p_t = row['optimized_power_list'][hour]
         min_t = row['hourly_time_dict'][hour]
-        if hour>0:
-            min_pre, p_pre = row['hourly_time_dict'][hour-1],row['optimized_power_list'][hour-1]
+        if hour > 0:
+            min_pre, p_pre = row['hourly_time_dict'][hour - 1], row['optimized_power_list'][hour - 1]
         else:
-            min_pre,p_pre = 0,0
-        if hour<23:
-            min_next, p_next = row['hourly_time_dict'][hour+1],row['optimized_power_list'][hour+1]
+            min_pre, p_pre = 0, 0
+        if hour < 23:
+            min_next, p_next = row['hourly_time_dict'][hour + 1], row['optimized_power_list'][hour + 1]
         else:
-            min_next, p_next = 0,0
-        if p_pre==0 and p_t!=0:
-            if (min_t == 60 or min_pre==60) and (hour!=row['arr_time'].hour):
+            min_next, p_next = 0, 0
+        if p_pre == 0 and p_t != 0:
+            if (min_t == 60 or min_pre == 60) and (hour != row['arr_time'].hour):
                 start_min = 0
-            elif (min_t<60 and min_pre!=60 and min_t>0) and (hour!=row['arr_time'].hour):
-                start_min = 60-min_t
-            elif (hour==row['arr_time'].hour):
+            elif (min_t < 60 and min_pre != 60 and min_t > 0) and (hour != row['arr_time'].hour):
+                start_min = 60 - min_t
+            elif (hour == row['arr_time'].hour):
                 start_min = row['arr_time'].minute
             else:
                 start_min = 0
-            start_ts = pd.Timestamp(datetime(year=2050,month=5,day=date,hour=hour,minute=start_min))
+            start_ts = pd.Timestamp(datetime(year=2050, month=5, day=date, hour=hour, minute=start_min))
             process_key = (start_ts,)
-        if p_t!=0:
+        if p_t != 0:
             power.append(p_t)
-        if p_next==0 and p_t!=0:
-            if (min_t==60 or min_next>0) and (hour!=row['park_end_time'].hour):
-                end_min=59
-            elif (min_t<60 and min_next==0 and min_pre>0) and (hour!=row['park_end_time'].hour):
-                end_min=min_t
-            elif (hour==row['park_end_time'].hour):
-                end_min=row['park_end_time'].minute
+        if p_next == 0 and p_t != 0:
+            if (min_t == 60 or min_next > 0) and (hour != row['park_end_time'].hour):
+                end_min = 59
+            elif (min_t < 60 and min_next == 0 and min_pre > 0) and (hour != row['park_end_time'].hour):
+                end_min = min_t
+            elif (hour == row['park_end_time'].hour):
+                end_min = row['park_end_time'].minute
             else:
                 end_min = 0
-            end_ts = pd.Timestamp(datetime(year=2050,month=5,day=date,hour=hour,minute=end_min))
+            end_ts = pd.Timestamp(datetime(year=2050, month=5, day=date, hour=hour, minute=end_min))
             process_key = process_key + (end_ts,)
             process[process_key] = power
             process_key = ()
@@ -120,62 +128,88 @@ def get_timestamp_pair(row):
 
 
 df = pd.read_csv(f"{path}/grid369_mobility_dataset.csv")
-df['dep_time'] = pd.to_datetime(df['dep_time'],format='mixed')
-df['arr_time'] = pd.to_datetime(df['arr_time'],format='mixed')
-df['st_chg_time'] = pd.to_datetime(df['st_chg_time'],format='mixed')
-df['ed_chg_time'] = pd.to_datetime(df['ed_chg_time'],format='mixed')
-df['chg_time'] = pd.to_timedelta(df['ed_chg_time']-df['st_chg_time'],unit='m')
+df['dep_time'] = pd.to_datetime(df['dep_time'])
+df['arr_time'] = pd.to_datetime(df['arr_time'])
+df['st_chg_time'] = pd.to_datetime(df['st_chg_time'])
+df['ed_chg_time'] = pd.to_datetime(df['ed_chg_time'])
+df['chg_time'] = pd.to_timedelta(df['ed_chg_time'] - df['st_chg_time'], unit='m')
 
 df['dep_hour'] = df['dep_time'].dt.hour
 df['arr_hour'] = df['arr_time'].dt.hour
-df.sort_values(by=['person','dep_time'])
+df.sort_values(by=['person', 'dep_time'])
 df['next_travel_TP1_consumption'] = df.groupby('person')['TP1 consumption kWh'].shift(-1).fillna(0)
 
 d = df[(df['grid'] == "369_0") & ((df['type_day'] == 'Thursday') | (df['type_day'] == 'Friday'))]
 d['arr_time'] = d['dep_time'] + pd.to_timedelta(d['trav_time'], unit='m')
-d.loc[d['type_day'] == 'Friday', 'arr_time'] = d.loc[d['type_day'] == 'Friday', 'arr_time'].apply(lambda dt: dt.replace(day=6, month=5, year=2050))
-d.loc[d['type_day'] == 'Thursday', 'arr_time'] = d.loc[d['type_day'] == 'Thursday', 'arr_time'].apply(lambda dt: dt.replace(day=5, month=5, year=2050))
-d['park_end_time'] = d['arr_time']+pd.to_timedelta(d['parking_time'],unit='m')
+d.loc[d['type_day'] == 'Friday', 'arr_time'] = d.loc[d['type_day'] == 'Friday', 'arr_time'].apply(
+    lambda dt: dt.replace(day=6, month=5, year=2050))
+d.loc[d['type_day'] == 'Thursday', 'arr_time'] = d.loc[d['type_day'] == 'Thursday', 'arr_time'].apply(
+    lambda dt: dt.replace(day=5, month=5, year=2050))
+d['park_end_time'] = d['arr_time'] + pd.to_timedelta(d['parking_time'], unit='m')
 d['park_end_hour'] = d['park_end_time'].dt.hour
 d['park_end_day'] = d['park_end_time'].dt.day
-d.loc[:, 'st_chg_time'] = d.apply(lambda row: row['st_chg_time'].replace(day=row['arr_time'].day, month=row['arr_time'].month, year=row['arr_time'].year), axis=1)
-d['ed_chg_time'] = d['st_chg_time']+d['chg_time']
-d['chg_time'] = d['chg_time'].dt.total_seconds()/60
-d = d[(d['park_end_time']>='2050-05-06 00:00:00') & (d['arr_time']<'2050-05-07 00:00:00')]
-d.insert(0,'event_index',d.index)
-d['max_chg_e'] = d['B']-d['SoE_bc']
-d['real_chg_e'] = d['SoE_ac']-d['SoE_bc']
-d['hourly_time_dict'] = d.apply(lambda x:create_dict(x), axis =1)
-d['soe_init'] = d.apply(lambda x:soe_init(x), axis =1)
-d['charge_time_list'] = d.apply(lambda x:create_charge_time_list(x), axis=1)
-d['charge_power_list'] = d.apply(lambda x: [x['chg rate'] if t >30 else 0 for t in x['charge_time_list']], axis=1)
-d['charge_energy_list'] = d.apply(lambda x:[t/60*x['chg rate']for t in x['charge_time_list']], axis=1)
+d.loc[:, 'st_chg_time'] = d.apply(
+    lambda row: row['st_chg_time'].replace(day=row['arr_time'].day, month=row['arr_time'].month,
+                                           year=row['arr_time'].year), axis=1)
+d['ed_chg_time'] = d['st_chg_time'] + d['chg_time']
+d['chg_time'] = d['chg_time'].dt.total_seconds() / 60
+d = d[(d['park_end_time'] >= '2050-05-06 00:00:00') & (d['arr_time'] < '2050-05-07 00:00:00')]
+d.insert(0, 'event_index', d.index)
+d['max_chg_e'] = d['B'] - d['SoE_bc']
+d['real_chg_e'] = d['SoE_ac'] - d['SoE_bc']
+d['hourly_time_dict'] = d.apply(lambda x: create_dict(x), axis=1)
+d['soe_init'] = d.apply(lambda x: soe_init(x), axis=1)
+d['charge_time_list'] = d.apply(lambda x: create_charge_time_list(x), axis=1)
+d['charge_power_list'] = d.apply(lambda x: [x['chg rate'] if t > 30 else 0 for t in x['charge_time_list']], axis=1)
+d['charge_energy_list'] = d.apply(lambda x: [t / 60 * x['chg rate'] for t in x['charge_time_list']], axis=1)
 
 
 # Normalize Tobia's Nexus Output
 hv_bus = str(89)
 # Controlled charging
-charge = pd.read_csv(f"{data_path}/Added_up_charge_2050.csv") # in MW
-charge.rename(columns={'Unnamed: 0':'ts'}, inplace=True)
-charge = charge.loc[(charge.ts<"2050-05-07 00:00:00") & (charge.ts>="2050-05-06 00:00:00")][['ts','peak',hv_bus]]
-# Controlled discharging
-discharge = pd.read_csv(f"{data_path}/EVBatt_power_hourly_2050_discharge_mapped.csv")
-discharge = discharge.rename(columns={'Unnamed: 0':'ts'})
-discharge = discharge.loc[(discharge.ts<"2050-05-07 00:00:00") & (discharge.ts>="2050-05-06 00:00:00")][['ts',hv_bus]]
-# Find Netload Max
-net= charge['89']-discharge['89']
-day_max = net.max()
-charge['normalized_profile'] = charge[hv_bus]/day_max
-charge.index=range(24)
-discharge['normalized_profile'] = discharge[hv_bus]/day_max
-discharge.index=range(24)
-net = charge['89']-discharge['89']
-net_normalized = net/day_max
+charge_raw = pd.read_csv(f"{data_path}/Added_up_charge_2050_raw.csv",index_col=0)  # in MW
+print("columns' names: \n")
+print(charge_raw.columns)
+charge_raw['ts'] = pd.to_datetime(charge_raw['ts'])
+print("charge_raw unfiltered: \n")
+print(charge_raw.head())
+charge = charge_raw[(charge_raw.ts < pd.to_datetime("2050-05-07 00:00:00")) & (charge_raw.ts >= pd.to_datetime("2050-05-06 00:00:00"))][['ts', 'peak', hv_bus]]
+charge.index = range(24)
+print("charge_raw filtered: \n")
+print(charge.head())
+print(len(charge))
 
-clustered = d.sort_values(by=['arr_time','parking_time'])
+# Controlled discharging
+discharge_raw = pd.read_csv(f"{data_path}/EVBatt_power_hourly_2050_discharge_mapped_raw.csv", index_col=0)
+print("columns' names: \n")
+print(charge_raw.columns)
+discharge_raw['ts'] = pd.to_datetime(discharge_raw['ts'])
+print("discharge_raw unfiltered: \n")
+print(discharge_raw.head())
+discharge = discharge_raw.loc[(discharge_raw.ts < pd.to_datetime("2050-05-07 00:00:00")) & (discharge_raw.ts >= pd.to_datetime("2050-05-06 00:00:00"))][
+    ['ts', hv_bus]]
+discharge.index = range(24)
+# Find Netload Max
+net = charge['89'] - discharge['89']
+print(discharge['89'])
+print(pd.__version__)
+print("net: \n", net)
+
+print("net-type: ", net.dtype)
+day_max = net.max()
+print("day_max: \n", day_max)
+charge['normalized_profile'] = charge[hv_bus] / day_max
+discharge['normalized_profile'] = discharge[hv_bus] / day_max
+net = charge['89'] - discharge['89']
+net_normalized = net / day_max
+
+print(charge['normalized_profile'])
+print(discharge['normalized_profile'])
+
+clustered = d.sort_values(by=['arr_time', 'parking_time'])
 k = 25
 group = np.arange(len(clustered)) % k
-clustered['cluster']=group
+clustered['cluster'] = group
 
 
 def opt_charge_profile(charge, discharge, net_normalized, cluster, emob_max_p, normalized_tot_e, date, cluster_i, path):
@@ -442,7 +476,7 @@ def opt_charge_profile(charge, discharge, net_normalized, cluster, emob_max_p, n
     def avoid_adj_alternating_rule(m, e, t):
         if t > 0:
             return (m.is_charging[e, t - 1] - m.is_discharging[e, t - 1]) * (
-                        m.is_charging[e, t] - m.is_discharging[e, t]) >= 0
+                    m.is_charging[e, t] - m.is_discharging[e, t]) >= 0
         else:
             return Constraint.Skip
 
