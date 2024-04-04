@@ -5,17 +5,23 @@ from pyomo.environ import *
 from datetime import datetime
 import pickle
 
-# Basic Setting
-this_day = '2050-05-06'
-this_weekday = 'Friday'
+# Euler setting
 user = 'huiluo'
 grid_folder = 'grid_369_0'
 path = f"/cluster/home/{user}/mt/{grid_folder}"
 data_path = f"/cluster/home/{user}/mt/nexus_profile"
 
-# Utlity
+# Basic Setting
+grid = "369_0"
+this_day = '2050-05-06'
+this_weekday = 'Friday'
+next_two = True   # True consider next 2 trips,False consider only next 1 trip
 date = 6
-
+scenario_year = 2050
+day_start = pd.to_datetime(f"{scenario_year}-05-{date}")
+day_end = pd.to_datetime(f"{scenario_year}-05-{date+1}")
+participate_rate = 0.2  # 1 no constraints on participation rate, parking event based, not vehicle based
+min_power_level = 0.7 # 1 constant power request at max. charger power, otherwise set a lower limit on power requested: min_power_level * max_power
 
 # Data Preprocessing
 def create_dict(row):
@@ -106,7 +112,7 @@ def get_timestamp_pair(row):
                 start_min = row['arr_time'].minute
             else:
                 start_min = 0
-            start_ts = pd.Timestamp(datetime(year=2050, month=5, day=date, hour=hour, minute=start_min))
+            start_ts = pd.Timestamp(datetime(year=scenario_year, month=5, day=date, hour=hour, minute=start_min))
             process_key = (start_ts,)
         if p_t != 0:
             power.append(p_t)
@@ -119,7 +125,7 @@ def get_timestamp_pair(row):
                 end_min = row['park_end_time'].minute
             else:
                 end_min = 0
-            end_ts = pd.Timestamp(datetime(year=2050, month=5, day=date, hour=hour, minute=end_min))
+            end_ts = pd.Timestamp(datetime(year=scenario_year, month=5, day=date, hour=hour, minute=end_min))
             process_key = process_key + (end_ts,)
             process[process_key] = power
             process_key = ()
@@ -127,87 +133,82 @@ def get_timestamp_pair(row):
     return process
 
 
+def calculate_next_trip_e(row):
+    if next_two and (row['next_parking_time'] < 60):
+        next_trip_e = row['next_travel_TP1_consumption'] + row['next_2_travel_TP1_consumption']
+    else:
+        next_trip_e = row['next_travel_TP1_consumption']
+    return next_trip_e
+
+
 df = pd.read_csv(f"{path}/grid369_mobility_dataset.csv")
 df['dep_time'] = pd.to_datetime(df['dep_time'])
 df['arr_time'] = pd.to_datetime(df['arr_time'])
 df['st_chg_time'] = pd.to_datetime(df['st_chg_time'])
 df['ed_chg_time'] = pd.to_datetime(df['ed_chg_time'])
-df['chg_time'] = pd.to_timedelta(df['ed_chg_time'] - df['st_chg_time'], unit='m')
-
+df['chg_time'] = pd.to_timedelta(df['ed_chg_time']-df['st_chg_time'],unit='m')
 df['dep_hour'] = df['dep_time'].dt.hour
 df['arr_hour'] = df['arr_time'].dt.hour
-df.sort_values(by=['person', 'dep_time'])
+df.sort_values(by=['person','dep_time'])
 df['next_travel_TP1_consumption'] = df.groupby('person')['TP1 consumption kWh'].shift(-1).fillna(0)
+df['next_parking_time'] = df.groupby('person')['parking_time'].shift(-1).fillna(0)
+df['next_2_travel_TP1_consumption'] = df.groupby('person')['TP1 consumption kWh'].shift(-2).fillna(0)
+df['next_trip_e'] = df.apply(calculate_next_trip_e,axis=1)
+df.drop(['next_parking_time','next_travel_TP1_consumption','next_2_travel_TP1_consumption'], axis=1,inplace=True)
 
 d = df[(df['grid'] == "369_0") & ((df['type_day'] == 'Thursday') | (df['type_day'] == 'Friday'))]
 d['arr_time'] = d['dep_time'] + pd.to_timedelta(d['trav_time'], unit='m')
-d.loc[d['type_day'] == 'Friday', 'arr_time'] = d.loc[d['type_day'] == 'Friday', 'arr_time'].apply(
-    lambda dt: dt.replace(day=6, month=5, year=2050))
-d.loc[d['type_day'] == 'Thursday', 'arr_time'] = d.loc[d['type_day'] == 'Thursday', 'arr_time'].apply(
-    lambda dt: dt.replace(day=5, month=5, year=2050))
-d['park_end_time'] = d['arr_time'] + pd.to_timedelta(d['parking_time'], unit='m')
+d.loc[d['type_day'] == 'Friday', 'arr_time'] = d.loc[d['type_day'] == 'Friday', 'arr_time'].apply(lambda dt: dt.replace(day=date, month=5, year=scenario_year))
+d.loc[d['type_day'] == 'Thursday', 'arr_time'] = d.loc[d['type_day'] == 'Thursday', 'arr_time'].apply(lambda dt: dt.replace(day=date-1, month=5, year=scenario_year))
+d['park_end_time'] = d['arr_time']+pd.to_timedelta(d['parking_time'],unit='m')
 d['park_end_hour'] = d['park_end_time'].dt.hour
 d['park_end_day'] = d['park_end_time'].dt.day
-d.loc[:, 'st_chg_time'] = d.apply(
-    lambda row: row['st_chg_time'].replace(day=row['arr_time'].day, month=row['arr_time'].month,
-                                           year=row['arr_time'].year), axis=1)
-d['ed_chg_time'] = d['st_chg_time'] + d['chg_time']
-d['chg_time'] = d['chg_time'].dt.total_seconds() / 60
-d = d[(d['park_end_time'] >= '2050-05-06 00:00:00') & (d['arr_time'] < '2050-05-07 00:00:00')]
-d.insert(0, 'event_index', d.index)
-d['max_chg_e'] = d['B'] - d['SoE_bc']
-d['real_chg_e'] = d['SoE_ac'] - d['SoE_bc']
-d['hourly_time_dict'] = d.apply(lambda x: create_dict(x), axis=1)
-d['soe_init'] = d.apply(lambda x: soe_init(x), axis=1)
-d['charge_time_list'] = d.apply(lambda x: create_charge_time_list(x), axis=1)
-d['charge_power_list'] = d.apply(lambda x: [x['chg rate'] if t > 30 else 0 for t in x['charge_time_list']], axis=1)
-d['charge_energy_list'] = d.apply(lambda x: [t / 60 * x['chg rate'] for t in x['charge_time_list']], axis=1)
+d.loc[:, 'st_chg_time'] = d.apply(lambda row: row['st_chg_time'].replace(day=row['arr_time'].day, month=row['arr_time'].month, year=row['arr_time'].year), axis=1)
+d['ed_chg_time'] = d['st_chg_time']+d['chg_time']
+d['chg_time'] = d['chg_time'].dt.total_seconds()/60
+d = d[(d['park_end_time']>=day_start) & (d['arr_time']<day_end)]
+d.insert(0,'event_index',d.index)
+d['max_chg_e'] = d['B']-d['SoE_bc']
+d['real_chg_e'] = d['SoE_ac']-d['SoE_bc']
+d['hourly_time_dict'] = d.apply(lambda x:create_dict(x), axis =1)
+d['soe_init'] = d.apply(lambda x:soe_init(x), axis =1)
+d['charge_time_list'] = d.apply(lambda x:create_charge_time_list(x), axis=1)
+d['charge_power_list'] = d.apply(lambda x: [x['chg rate'] if t >30 else 0 for t in x['charge_time_list']], axis=1)
+d['charge_energy_list'] = d.apply(lambda x:[t/60*x['chg rate']for t in x['charge_time_list']], axis=1)
 
 
 # Normalize Tobia's Nexus Output
 hv_bus = str(89)
 # Controlled charging
-charge_raw = pd.read_csv(f"{data_path}/Added_up_charge_2050_raw.csv",index_col=0)  # in MW
-print("columns' names: \n")
-print(charge_raw.columns)
+charge_raw = pd.read_csv(f"{data_path}/Added_up_charge_2050_raw.csv", index_col=0)  # in MW
+# print("columns' names: \n")
+# print(charge_raw.columns)
 charge_raw['ts'] = pd.to_datetime(charge_raw['ts'])
-print("charge_raw unfiltered: \n")
-print(charge_raw.head())
-charge = charge_raw[(charge_raw.ts < pd.to_datetime("2050-05-07 00:00:00")) & (charge_raw.ts >= pd.to_datetime("2050-05-06 00:00:00"))][['ts', 'peak', hv_bus]]
+# print("charge_raw unfiltered: \n")
+# print(charge_raw.head())
+charge = charge_raw[(charge_raw.ts < day_end) & (charge_raw.ts >= day_start)][['ts', 'peak', hv_bus]]
 charge.index = range(24)
-print("charge_raw filtered: \n")
-print(charge.head())
-print(len(charge))
-
+# print("charge_raw filtered: \n")
+# print(charge.head())
 # Controlled discharging
 discharge_raw = pd.read_csv(f"{data_path}/EVBatt_power_hourly_2050_discharge_mapped_raw.csv", index_col=0)
-print("columns' names: \n")
-print(charge_raw.columns)
+# print("columns' names: \n")
+# print(charge_raw.columns)
 discharge_raw['ts'] = pd.to_datetime(discharge_raw['ts'])
-print("discharge_raw unfiltered: \n")
-print(discharge_raw.head())
-discharge = discharge_raw.loc[(discharge_raw.ts < pd.to_datetime("2050-05-07 00:00:00")) & (discharge_raw.ts >= pd.to_datetime("2050-05-06 00:00:00"))][
-    ['ts', hv_bus]]
+# print("discharge_raw unfiltered: \n")
+# print(discharge_raw.head())
+discharge = discharge_raw.loc[(discharge_raw.ts<day_end) & (discharge_raw.ts>=day_start)][['ts',hv_bus]]
 discharge.index = range(24)
 # Find Netload Max
 net = charge['89'] - discharge['89']
-print(discharge['89'])
-print(pd.__version__)
-print("net: \n", net)
-
-print("net-type: ", net.dtype)
 day_max = net.max()
-print("day_max: \n", day_max)
 charge['normalized_profile'] = charge[hv_bus] / day_max
 discharge['normalized_profile'] = discharge[hv_bus] / day_max
 net = charge['89'] - discharge['89']
 net_normalized = net / day_max
 
-print(charge['normalized_profile'])
-print(discharge['normalized_profile'])
-
 clustered = d.sort_values(by=['arr_time', 'parking_time'])
-k = 25
+k = 20
 group = np.arange(len(clustered)) % k
 clustered['cluster'] = group
 
@@ -262,10 +263,13 @@ def opt_charge_profile(charge, discharge, net_normalized, cluster, emob_max_p, n
     max_power_dict = {e: cluster.loc[e, 'normalized_chg_power'] for e in e_list}  # max charge rate at normalized scale
     m.max_power = Param(m.E, initialize=max_power_dict)  # unit kW
 
+    parking_duration = {e: cluster.loc[e, 'parking_time'] for e in e_list}
+    m.parking_durat = Param(m.E, initialize=parking_duration)  # parking time in minutes
+
     parking_time_dict = {(e, t): cluster.loc[e, 'hourly_time_dict'][t] / 60 for e in e_list for t in t_list}
     m.parking_time = Param(m.E, m.T, initialize=parking_time_dict)  # parking minutes within this hour
 
-    next_trip_e_dict = {e: cluster.loc[e, 'next_travel_TP1_consumption'] / emob_max_p for e in e_list}
+    next_trip_e_dict = {e: cluster.loc[e, 'next_trip_e'] / emob_max_p for e in e_list}
     m.next_trip_e = Param(m.E, initialize=next_trip_e_dict)  # normalized energy next trip requires
 
     park_end_hour_dict = {e: cluster.loc[e, 'park_end_hour'] for e in e_list}
@@ -335,11 +339,23 @@ def opt_charge_profile(charge, discharge, net_normalized, cluster, emob_max_p, n
 
     m.power_limit_d = Constraint(m.E, m.T, rule=discharge_power_limit_rule)
 
+    # def charge_power_limit_s_upper_rule(m, e, t):
+    #     return m.charge_power_limit_s[e, t] <= 0.5 * m.max_power[e]
+    #
+    # # Adding the upper bound constraint to the model for each event e and time t
+    # m.charge_power_limit_s_upper = Constraint(m.E, m.T, rule=charge_power_limit_s_upper_rule)
+    #
+    # def discharge_power_limit_s_upper_rule(m, e, t):
+    #     return m.discharge_power_limit_s[e, t] <= 0.5 * m.max_power[e]
+    #
+    # # Adding the upper bound constraint to the model for each event e and time t
+    # m.discharge_power_limit_s_upper = Constraint(m.E, m.T, rule=discharge_power_limit_s_upper_rule)
+
     def parking_rule_c(m, e, t):
         if m.parking_time[e, t] == 0:
             return m.charge_power[e, t] == 0  # not parked for charge
-        elif t < 23 and m.parking_time[e, t] < 0.5 and m.parking_time[e, t + 1] == 0:
-            return m.charge_power[e, t] == 0  # do not charge in the last parking hour less than 30 min
+        elif t < 23 and m.parking_time[e, t] < float(0.25 / 3) and m.parking_time[e, t + 1] == 0:
+            return m.charge_power[e, t] == 0  # do not charge in the last parking hour less than 5 min
         else:
             return Constraint.Skip
 
@@ -354,33 +370,36 @@ def opt_charge_profile(charge, discharge, net_normalized, cluster, emob_max_p, n
     m.parking_d = Constraint(m.E, m.T, rule=parking_rule_d)
 
     # Plug in as soon as parked
-    def charge_immediate_rule(m, e, t):
-        if (t > m.arr_hour[e]) and (m.arr_day[e] == date) and t > 0:
-            return m.is_charging[e, t - 1] >= m.is_charging[e, t]
-        elif m.arr_day[e] < date and t > 0:
-            return m.is_charging[e, t - 1] >= m.is_charging[e, t]
-        else:
-            return Constraint.Skip
-
-    m.charge_immediate = Constraint(m.E, m.T, rule=charge_immediate_rule)
-
-    def discharge_immediate_rule(m, e, t):
-        if (t > m.arr_hour[e]) and (m.arr_day[e] == date) and t > 0:
-            return m.is_discharging[e, t - 1] >= m.is_discharging[e, t]
-        elif m.arr_day[e] < date and t > 0:
-            return m.is_discharging[e, t - 1] >= m.is_discharging[e, t]
-        else:
-            return Constraint.Skip
-
-    m.discharge_immediate = Constraint(m.E, m.T, rule=discharge_immediate_rule)
-    # def plugin_immediate_rule(m,e,t):
-    #     if (t>m.arr_hour[e]) and (m.arr_day[e] == date):
-    #         return (m.is_charging[e,m.arr_hour[e]]+m.is_discharging[e,m.arr_hour[e]])>=(m.is_charging[e,t]+m.is_discharging[e,t])
-    #     elif m.arr_day[e]<date:
-    #         return (m.is_charging[e,0]+m.is_discharging[e,0])>=(m.is_charging[e,t]+m.is_discharging[e,t])
+    # def charge_immediate_rule(m,e,t):
+    #     if (t>m.arr_hour[e]) and (m.arr_day[e] == date) and t>0:
+    #         return m.is_charging[e,t-1]>=m.is_charging[e,t]
+    #     elif m.arr_day[e]<date and t>0:
+    #         return m.is_charging[e,t-1]>=m.is_charging[e,t]
     #     else:
     #         return Constraint.Skip
-    # m.plugin_immediate = Constraint(m.E,m.T,rule=plugin_immediate_rule)
+    # m.charge_immediate = Constraint(m.E,m.T,rule=charge_immediate_rule)
+    #
+    # def discharge_immediate_rule(m,e,t):
+    #     if (t>m.arr_hour[e]) and (m.arr_day[e] == date) and t>0:
+    #         return m.is_discharging[e,t-1]>=m.is_discharging[e,t]
+    #     elif m.arr_day[e]<date and t>0:
+    #         return m.is_discharging[e,t-1]>=m.is_discharging[e,t]
+    #     else:
+    #         return Constraint.Skip
+    # m.discharge_immediate = Constraint(m.E,m.T,rule=discharge_immediate_rule)
+
+    # If the parking event is shorter than 2hr, plug in and charge/discharge immediately, otherwise no such constraint
+    # Charge immediately if parking less than 2 hours
+    def plugin_immediate_rule(m, e, t):
+        if (m.parking_durat[e] < 120) and (t > m.arr_hour[e]) and (m.arr_day[e] == date):
+            return (m.is_charging[e, m.arr_hour[e]] + m.is_discharging[e, m.arr_hour[e]]) >= (
+                        m.is_charging[e, t] + m.is_discharging[e, t])
+        elif (m.parking_durat[e] < 120) and (m.arr_day[e] < date):
+            return (m.is_charging[e, 0] + m.is_discharging[e, 0]) >= (m.is_charging[e, t] + m.is_discharging[e, t])
+        else:
+            return Constraint.Skip
+
+    m.plugin_immediate = Constraint(m.E, m.T, rule=plugin_immediate_rule)
 
     '''
     SoE non-negative and prepare for future trips constraints
@@ -421,7 +440,7 @@ def opt_charge_profile(charge, discharge, net_normalized, cluster, emob_max_p, n
     Avoid alternating charging direction
     '''
 
-    def detect_charge_jump_1(m, e, t):
+    def detect_charge_jump_1(m, e, t):  # Detect jump on
         if t == 0:
             return m.charge_jump[e, t] == 0
         else:
@@ -429,13 +448,12 @@ def opt_charge_profile(charge, discharge, net_normalized, cluster, emob_max_p, n
 
     m.detect_charge_jump_1 = Constraint(m.E, m.T, rule=detect_charge_jump_1)
 
-    def detect_charge_jump_2(m, e, t):
-        if t == 0:
-            return m.charge_jump[e, t] == 0
-        else:
-            return m.is_charging[e, t - 1] - m.is_charging[e, t] >= -100000 * m.charge_jump[e, t]
-
-    m.detect_charge_jump_2 = Constraint(m.E, m.T, rule=detect_charge_jump_2)
+    # def detect_charge_jump_2(m,e,t):
+    #     if t==0:
+    #         return m.charge_jump[e,t]==0
+    #     else:
+    #         return m.is_charging[e,t-1]-m.is_charging[e,t]>= -100000 * m.charge_jump[e,t]
+    # m.detect_charge_jump_2 = Constraint(m.E,m.T,rule=detect_charge_jump_2)
 
     def charge_jump_cnt(m, e):
         return sum(m.charge_jump[e, t] for t in m.T)
@@ -443,11 +461,11 @@ def opt_charge_profile(charge, discharge, net_normalized, cluster, emob_max_p, n
     m.charge_jump_cnt = Expression(m.E, rule=charge_jump_cnt)
 
     def charge_jump_rule(m, e):
-        return m.charge_jump_cnt[e] <= 2
+        return m.charge_jump_cnt[e] <= 1
 
     m.charge_jump_rule = Constraint(m.E, rule=charge_jump_rule)
 
-    def detect_discharge_jump_1(m, e, t):
+    def detect_discharge_jump_1(m, e, t):  # Detect discharge jump on
         if t == 0:
             return m.discharge_jump[e, t] == 0
         else:
@@ -455,28 +473,32 @@ def opt_charge_profile(charge, discharge, net_normalized, cluster, emob_max_p, n
 
     m.detect_discharge_jump_1 = Constraint(m.E, m.T, rule=detect_discharge_jump_1)
 
-    def detect_discharge_jump_2(m, e, t):
-        if t == 0:
-            return m.discharge_jump[e, t] == 0
-        else:
-            return m.is_discharging[e, t - 1] - m.is_discharging[e, t] >= -100000 * m.discharge_jump[e, t]
-
-    m.detect_discharge_jump_2 = Constraint(m.E, m.T, rule=detect_discharge_jump_2)
-
+    # def detect_discharge_jump_2(m,e,t):
+    #     if t==0:
+    #         return m.discharge_jump[e,t]==0
+    #     else:
+    #         return m.is_discharging[e,t-1]-m.is_discharging[e,t]>= -100000 * m.discharge_jump[e,t]
+    # m.detect_discharge_jump_2 = Constraint(m.E,m.T,rule=detect_discharge_jump_2)
     def discharge_jump_cnt(m, e):
         return sum(m.discharge_jump[e, t] for t in m.T)
 
     m.discharge_jump_cnt = Expression(m.E, rule=discharge_jump_cnt)
 
     def discharge_jump_rule(m, e):
-        return m.charge_jump_cnt[e] <= 2
+        return m.discharge_jump_cnt[e] <= 1
 
     m.discharge_jump_rule = Constraint(m.E, rule=discharge_jump_rule)
+
+    # Either charge or discharge in one event, not allowing both
+    def only_charge_or_discharge_rule(m, e):
+        return m.charge_jump_cnt[e] + m.discharge_jump_cnt[e] <= 1
+
+    m.only_1 = Constraint(m.E, rule=only_charge_or_discharge_rule)
 
     def avoid_adj_alternating_rule(m, e, t):
         if t > 0:
             return (m.is_charging[e, t - 1] - m.is_discharging[e, t - 1]) * (
-                    m.is_charging[e, t] - m.is_discharging[e, t]) >= 0
+                        m.is_charging[e, t] - m.is_discharging[e, t]) >= 0
         else:
             return Constraint.Skip
 
@@ -488,7 +510,7 @@ def opt_charge_profile(charge, discharge, net_normalized, cluster, emob_max_p, n
 
     def min_charge_time_rule(m, e):
         return sum(m.is_charging[e, t] * m.parking_time[e, t] + m.is_discharging[e, t] * m.parking_time[e, t] for t in
-                   m.T) >= 0.5 * m.is_active[e]
+                   m.T) >= 1 * m.is_active[e]
 
     def activity_rule(m, e):
         M = 1000  # Example of a large constant, assuming this is larger than any possible sum of times
@@ -554,25 +576,31 @@ def opt_charge_profile(charge, discharge, net_normalized, cluster, emob_max_p, n
     # Objective
     def objective_rule(m):
         return sum((m.charge_to_match[t] - m.tot_charge_z[t]) ** 2 for t in m.T) + sum(
-            (m.discharge_to_match[t] - m.tot_discharge_z[t]) ** 2 for t in m.T) + sum(
-            1000 * (m.charge_power_limit_s[e, t] + m.discharge_power_limit_s[e, t]) for e in m.E for t in
-            m.T)  # + sum(m.change_direction[e] for e in m.E)
+            (m.discharge_to_match[t] - m.tot_discharge_z[t]) ** 2 for t in
+            m.T) + sum(1000*(m.charge_power_limit_s[e,t]+m.discharge_power_limit_s[e,t]) for e in m.E for t in m.T)
+        # + sum(m.change_direction[e] for e in m.E)
         # sum((m.charge_to_match[t]-m.hourly_tot_charge_power[t])**2 for t in m.T) + sum((m.discharge_to_match[t]-m.hourly_tot_discharge_power[t])**2 for t in m.T)+ sum(1000*(m.charge_power_limit_s[e,t]+m.discharge_power_limit_s[e,t]) for e in m.E for t in m.T)
 
     m.objective = Objective(rule=objective_rule, sense=minimize)
     ###########################
     # Solve model
     solver = SolverFactory('gurobi')
-    # solver.options['tol'] = 0.0001
+    solver.options['FeasibilityTol'] = 1e-2
+    solver.options['OptimalityTol'] = 1e-2
+    solver.options['MIPGapAbs'] = 0.3
+    solver.options['NoRelHeurTime'] = 60
+    # solver.options['NodeMethod'] = 2
+    solver.options['MIPFocus'] = 1
+
     solver.solve(m, tee=True)  # ,keepfiles=True,logfile="match_profile_log.log")
     # Save results
     ch_dict = {(e, t): m.charge_power[e, t].value * emob_max_p for e in m.E for t in
                m.T}  # Denormalize back to normal power value in kW
     dis_dict = {(e, t): m.discharge_power[e, t].value * emob_max_p for e in m.E for t in m.T}
     ch = pd.Series(ch_dict).unstack()
-    ch.to_csv(f'{path}/opt_res/369_0_cluster_{cluster_i}_charge.csv')
+    ch.to_csv(f'{path}/opt_res/{grid}_cluster_{cluster_i}_charge.csv')
     dis = pd.Series(dis_dict).unstack()
-    dis.to_csv(f'{path}/opt_res/369_0_cluster_{cluster_i}_discharge.csv')
+    dis.to_csv(f'{path}/opt_res/{grid}_cluster_{cluster_i}_discharge.csv')
     return 0
 
 
@@ -593,11 +621,6 @@ for i in range(k):
 
     if emob_max_p != 0:
         emob_agg_p_norm = [p / emob_max_p for p in emob_agg_p]
-        # plt.figure(figsize=(10, 6))
-        # plt.plot(emob_agg_p, label='power')
-        # plt.plot(emob_agg_e, label='energy')
-        # plt.legend()
-        # plt.savefig(f'{path}/369_9_cluster_{i}_agg_p_e.png')
         cluster.loc[:, 'normalized_chg_power'] = cluster['chg rate'] / emob_max_p
         normalized_tot_e = emob_tot_e / emob_max_p
         opt_res_code = opt_charge_profile(charge, discharge, net_normalized, cluster, emob_max_p, normalized_tot_e,
